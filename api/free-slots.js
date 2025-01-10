@@ -3,8 +3,8 @@ const { authenticate } = require('./auth');
 
 // 工作时间的默认值（东京时区）
 const DEFAULT_WORKING_HOURS = {
-  start: '09:00',
-  end: '18:00'
+  start: '00:00',
+  end: '23:59'
 };
 
 const DEFAULT_TIMEZONE = 'Asia/Tokyo';
