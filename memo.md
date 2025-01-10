@@ -1,0 +1,1 @@
+[](http://localhost/?code=4/0AanRRrte_ONAohvGWn5ns4DwjIxX1X2m-C5ATYBSLM8vPnLq4WYFJ8opqpOc2oPHam2rRg&scope=https://www.googleapis.com/auth/calendar)
