@@ -1,5 +1,6 @@
 const { google } = require('googleapis');
 const { authenticate } = require('./auth');
+const { DateTime } = require('luxon');
 
 // 工作时间的默认值（东京时区）
 const DEFAULT_WORKING_HOURS = {
@@ -9,36 +10,15 @@ const DEFAULT_WORKING_HOURS = {
 
 const DEFAULT_TIMEZONE = 'Asia/Tokyo';
 
-// 将时间字符串转换为指定时区的Date对象
+// 将时间字符串转换为指定时区的DateTime对象
 function timeStringToDate(dateStr, timeStr, timezone = DEFAULT_TIMEZONE) {
   const [hours, minutes] = timeStr.split(':');
-  // 使用给定的时区创建日期
-  const date = new Date(dateStr);
-  // 获取时区偏移
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
+  return DateTime.fromFormat(`${dateStr} ${timeStr}`, 'yyyy-MM-dd HH:mm', {
+    zone: timezone
+  }).set({
+    hour: parseInt(hours),
+    minute: parseInt(minutes)
   });
-  
-  // 解析格式化后的日期字符串
-  const parts = formatter.format(date).split(/[/,\s:]/);
-  const tzDate = new Date(
-    parseInt(parts[2]), // year
-    parseInt(parts[0]) - 1, // month
-    parseInt(parts[1]), // day
-    parseInt(hours),
-    parseInt(minutes),
-    0,
-    0
-  );
-  
-  return tzDate;
 }
 
 // 检查两个时间段是否重叠
@@ -70,18 +50,9 @@ function subtractBusyTime(freeSlot, busySlot) {
 
 // 格式化日期为指定时区的ISO字符串
 function formatToTimezone(date, timezone = DEFAULT_TIMEZONE) {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-    timeZoneName: 'short'
-  });
-  return new Date(formatter.format(date)).toISOString();
+  return DateTime.fromJSDate(date)
+    .setZone(timezone)
+    .toISO({ suppressMilliseconds: true });
 }
 
 // 解析事件标题中的缓冲时间
@@ -114,7 +85,9 @@ async function getFreeTimeSlots(req, res) {
 
     // 验证时区是否有效
     try {
-      Intl.DateTimeFormat('en-US', { timeZone: timezone });
+      if (!DateTime.local().setZone(timezone).isValid) {
+        throw new Error('Invalid timezone');
+      }
     } catch (error) {
       return res.status(400).json({
         success: false,
@@ -144,8 +117,8 @@ async function getFreeTimeSlots(req, res) {
     for (const cal of targetCalendars) {
       const events = await calendar.events.list({
         calendarId: cal.id,
-        timeMin: new Date(startDate).toISOString(),
-        timeMax: new Date(endDate + 'T23:59:59').toISOString(),
+        timeMin: DateTime.fromISO(startDate).setZone(timezone).toISO(),
+        timeMax: DateTime.fromISO(endDate).setZone(timezone).endOf('day').toISO(),
         singleEvents: true,
         orderBy: 'startTime',
         timeZone: timezone
@@ -154,16 +127,13 @@ async function getFreeTimeSlots(req, res) {
       if (events.data.items) {
         events.data.items.forEach(event => {
           const { before, after } = parseBufferTime(event.summary || '');
-          const eventStart = new Date(event.start.dateTime || event.start.date);
-          const eventEnd = new Date(event.end.dateTime || event.end.date);
+          const eventStart = DateTime.fromISO(event.start.dateTime || event.start.date, { zone: timezone });
+          const eventEnd = DateTime.fromISO(event.end.dateTime || event.end.date, { zone: timezone });
           
           // 应用缓冲时间
-          eventStart.setTime(eventStart.getTime() - before);
-          eventEnd.setTime(eventEnd.getTime() + after);
-          
           busySlots.push({
-            start: eventStart,
-            end: eventEnd
+            start: eventStart.minus({ milliseconds: before }).toJSDate(),
+            end: eventEnd.plus({ milliseconds: after }).toJSDate()
           });
         });
       }
@@ -171,12 +141,13 @@ async function getFreeTimeSlots(req, res) {
 
     // 生成工作时间段
     const freeSlots = [];
-    let currentDate = new Date(startDate);
-    const endDateTime = new Date(endDate);
+    let currentDate = DateTime.fromISO(startDate, { zone: timezone });
+    const endDateTime = DateTime.fromISO(endDate, { zone: timezone });
 
     while (currentDate <= endDateTime) {
-      const dayStart = timeStringToDate(currentDate.toISOString().split('T')[0], workingHours.start, timezone);
-      const dayEnd = timeStringToDate(currentDate.toISOString().split('T')[0], workingHours.end, timezone);
+      const currentDateStr = currentDate.toFormat('yyyy-MM-dd');
+      const dayStart = timeStringToDate(currentDateStr, workingHours.start, timezone).toJSDate();
+      const dayEnd = timeStringToDate(currentDateStr, workingHours.end, timezone).toJSDate();
       
       let daySlots = [{ start: dayStart, end: dayEnd }];
 
@@ -190,7 +161,7 @@ async function getFreeTimeSlots(req, res) {
       }
 
       freeSlots.push(...daySlots);
-      currentDate.setDate(currentDate.getDate() + 1);
+      currentDate = currentDate.plus({ days: 1 });
     }
 
     // 过滤掉小于30分钟的时间段
