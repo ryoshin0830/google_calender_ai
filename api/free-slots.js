@@ -84,6 +84,18 @@ function formatToTimezone(date, timezone = DEFAULT_TIMEZONE) {
   return new Date(formatter.format(date)).toISOString();
 }
 
+// 解析事件标题中的缓冲时间
+function parseBufferTime(eventSummary) {
+  const bufferMatch = eventSummary.match(/-B(\d+)A(\d+)/);
+  if (bufferMatch) {
+    return {
+      before: parseInt(bufferMatch[1]) * 60 * 1000, // 转换为毫秒
+      after: parseInt(bufferMatch[2]) * 60 * 1000   // 转换为毫秒
+    };
+  }
+  return { before: 0, after: 0 };
+}
+
 async function getFreeTimeSlots(req, res) {
   try {
     const { 
@@ -141,9 +153,17 @@ async function getFreeTimeSlots(req, res) {
 
       if (events.data.items) {
         events.data.items.forEach(event => {
+          const { before, after } = parseBufferTime(event.summary || '');
+          const eventStart = new Date(event.start.dateTime || event.start.date);
+          const eventEnd = new Date(event.end.dateTime || event.end.date);
+          
+          // 应用缓冲时间
+          eventStart.setTime(eventStart.getTime() - before);
+          eventEnd.setTime(eventEnd.getTime() + after);
+          
           busySlots.push({
-            start: new Date(event.start.dateTime || event.start.date),
-            end: new Date(event.end.dateTime || event.end.date)
+            start: eventStart,
+            end: eventEnd
           });
         });
       }
