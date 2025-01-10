@@ -1,63 +1,60 @@
 const express = require('express');
-const cors = require('cors');
 const { google } = require('googleapis');
 const { authenticate } = require('./auth');
 const getFreeTimeSlots = require('./free-slots');
+const { DateTime } = require('luxon');
 
-const app = express();
+const router = express.Router();
+const DEFAULT_TIMEZONE = 'Asia/Tokyo';
 
-// 配置 CORS
-const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-    ? [process.env.FRONTEND_URL] // 生产环境只允许特定域名
-    : true, // 开发环境允许所有域名
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-};
-app.use(cors(corsOptions));
-app.use(express.json());
+// 解析日期范围，考虑时区
+function parseDateRange(input, timezone = DEFAULT_TIMEZONE) {
+  try {
+    const now = DateTime.now().setZone(timezone).startOf('day');
 
-const DEFAULT_TIMEZONE = 'Asia/Shanghai';
-
-// 解析日期范围
-function parseDateRange(input) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  if (input.days !== undefined) {
-    const days = parseInt(input.days);
-    const start = new Date(today);
-    const end = new Date(today);
-    
-    if (days >= 0) {
-      end.setDate(today.getDate() + days);
-    } else {
-      start.setDate(today.getDate() + days);
-    }
-    return { start, end };
-  }
-  
-  if (input.startDate && input.endDate) {
-    const start = new Date(input.startDate);
-    const end = new Date(input.endDate);
-    end.setHours(23, 59, 59, 999);
-    
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new Error('Invalid date format. Please use YYYY-MM-DD format');
+    if (input.days !== undefined) {
+      const days = parseInt(input.days);
+      let start, end;
+      
+      if (days >= 0) {
+        start = now;
+        end = now.plus({ days });
+      } else {
+        start = now.plus({ days });
+        end = now;
+      }
+      
+      return {
+        start: start.toJSDate(),
+        end: end.endOf('day').toJSDate()
+      };
     }
     
-    return { start, end };
+    if (input.startDate && input.endDate) {
+      const start = DateTime.fromISO(input.startDate, { zone: timezone }).startOf('day');
+      const end = DateTime.fromISO(input.endDate, { zone: timezone }).endOf('day');
+      
+      if (!start.isValid || !end.isValid) {
+        throw new Error('Invalid date format. Please use YYYY-MM-DD format');
+      }
+      
+      return {
+        start: start.toJSDate(),
+        end: end.toJSDate()
+      };
+    }
+    
+    throw new Error('Invalid input format');
+  } catch (error) {
+    throw new Error(`Date parsing error: ${error.message}`);
   }
-  
-  throw new Error('Invalid input format');
 }
 
-// 优化获取日历事件的函数
-async function listAllEvents(auth, timeRange) {
+// 优化获取日历事件的函数，添加时区支持
+async function listAllEvents(auth, timeRange, timezone = DEFAULT_TIMEZONE) {
   const calendar = google.calendar({ version: 'v3', auth });
   
   try {
-    // 获取所有日历，设置超时
     const calendarList = await Promise.race([
       calendar.calendarList.list(),
       new Promise((_, reject) => 
@@ -68,7 +65,6 @@ async function listAllEvents(auth, timeRange) {
     const calendars = calendarList.data.items;
     let allEvents = [];
     
-    // 并行获取所有日历的事件
     const eventPromises = calendars.map(cal => 
       calendar.events.list({
         calendarId: cal.id,
@@ -76,18 +72,31 @@ async function listAllEvents(auth, timeRange) {
         timeMax: timeRange.end.toISOString(),
         singleEvents: true,
         orderBy: 'startTime',
+        timeZone: timezone
       }).then(response => {
         if (response.data.items && response.data.items.length > 0) {
-          return response.data.items.map(event => ({
-            id: event.id,
-            title: event.summary,
-            calendar: cal.summary,
-            calendarId: cal.id,
-            start: event.start.dateTime || event.start.date,
-            end: event.end.dateTime || event.end.date,
-            description: event.description || null,
-            location: event.location || null
-          }));
+          return response.data.items.map(event => {
+            // 使用 Luxon 处理时间和时区
+            const startDateTime = event.start.dateTime 
+              ? DateTime.fromISO(event.start.dateTime, { zone: timezone })
+              : DateTime.fromISO(event.start.date, { zone: timezone }).startOf('day');
+            
+            const endDateTime = event.end.dateTime
+              ? DateTime.fromISO(event.end.dateTime, { zone: timezone })
+              : DateTime.fromISO(event.end.date, { zone: timezone }).endOf('day');
+
+            return {
+              id: event.id,
+              title: event.summary,
+              calendar: cal.summary,
+              calendarId: cal.id,
+              start: startDateTime.toISO(),
+              end: endDateTime.toISO(),
+              description: event.description || null,
+              location: event.location || null,
+              timezone: timezone
+            };
+          });
         }
         return [];
       }).catch(error => {
@@ -96,7 +105,6 @@ async function listAllEvents(auth, timeRange) {
       })
     );
 
-    // 使用 Promise.all 并设置总体超时
     const results = await Promise.race([
       Promise.all(eventPromises),
       new Promise((_, reject) => 
@@ -105,7 +113,7 @@ async function listAllEvents(auth, timeRange) {
     ]);
 
     allEvents = results.flat();
-    allEvents.sort((a, b) => new Date(a.start) - new Date(b.start));
+    allEvents.sort((a, b) => DateTime.fromISO(a.start) - DateTime.fromISO(b.start));
     
     return allEvents;
   } catch (error) {
@@ -132,31 +140,42 @@ async function listCalendars(auth) {
   }
 }
 
-// 优化添加事件的函数
-async function addEvents(auth, events) {
+// 优化添加事件的函数，改进时区处理
+async function addEvents(auth, events, timezone = DEFAULT_TIMEZONE) {
   const calendar = google.calendar({ version: 'v3', auth });
   const results = [];
-  const batchSize = 5; // 每批处理的事件数
+  const batchSize = 5;
 
-  // 将事件分批处理
   for (let i = 0; i < events.length; i += batchSize) {
     const batch = events.slice(i, i + batchSize);
     const batchPromises = batch.map(event => {
+      // 使用 Luxon 处理时间和时区
+      const eventTimezone = event.timezone || timezone;
+      const startDateTime = DateTime.fromISO(event.start, { zone: eventTimezone });
+      const endDateTime = DateTime.fromISO(event.end, { zone: eventTimezone });
+
+      if (!startDateTime.isValid || !endDateTime.isValid) {
+        return Promise.resolve({
+          success: false,
+          title: event.title,
+          error: 'Invalid date format'
+        });
+      }
+
       const calendarEvent = {
         summary: event.title,
         description: event.description,
         location: event.location,
         start: {
-          dateTime: new Date(event.start).toISOString(),
-          timeZone: event.timezone || DEFAULT_TIMEZONE,
+          dateTime: startDateTime.toISO(),
+          timeZone: eventTimezone
         },
         end: {
-          dateTime: new Date(event.end).toISOString(),
-          timeZone: event.timezone || DEFAULT_TIMEZONE,
-        },
+          dateTime: endDateTime.toISO(),
+          timeZone: eventTimezone
+        }
       };
 
-      // 使用指定的日历ID，如果没有指定则使用主日历
       const targetCalendarId = event.calendarId || 'primary';
 
       return calendar.events.insert({
@@ -166,7 +185,8 @@ async function addEvents(auth, events) {
         success: true,
         eventId: response.data.id,
         title: event.title,
-        calendarId: targetCalendarId
+        calendarId: targetCalendarId,
+        timezone: eventTimezone
       })).catch(error => ({
         success: false,
         title: event.title,
@@ -214,22 +234,21 @@ async function deleteEvents(auth, events) {
   return results;
 }
 
-// 添加空闲时间查询路由
-app.post('/api/events/free-slots', getFreeTimeSlots);
-
 // API 路由
-app.post('/api/events/list', async (req, res) => {
+router.post('/events/list', async (req, res) => {
   try {
+    const timezone = req.body.timezone || DEFAULT_TIMEZONE;
     const auth = await authenticate();
-    const timeRange = parseDateRange(req.body);
-    const events = await listAllEvents(auth, timeRange);
+    const timeRange = parseDateRange(req.body, timezone);
+    const events = await listAllEvents(auth, timeRange, timezone);
     
     res.json({
       success: true,
       timeRange: {
-        start: timeRange.start,
-        end: timeRange.end
+        start: DateTime.fromJSDate(timeRange.start, { zone: timezone }).toISO(),
+        end: DateTime.fromJSDate(timeRange.end, { zone: timezone }).toISO()
       },
+      timezone: timezone,
       count: events.length,
       events: events
     });
@@ -242,14 +261,15 @@ app.post('/api/events/list', async (req, res) => {
   }
 });
 
-// 添加事件
-app.post('/api/events/add', async (req, res) => {
+router.post('/events/add', async (req, res) => {
   try {
+    const timezone = req.body.timezone || DEFAULT_TIMEZONE;
     const auth = await authenticate();
-    const results = await addEvents(auth, req.body.events);
+    const results = await addEvents(auth, req.body.events, timezone);
     
     res.json({
       success: true,
+      timezone: timezone,
       results: results
     });
   } catch (error) {
@@ -260,8 +280,7 @@ app.post('/api/events/add', async (req, res) => {
   }
 });
 
-// 删除事件
-app.post('/api/events/delete', async (req, res) => {
+router.post('/events/delete', async (req, res) => {
   try {
     const auth = await authenticate();
     const results = await deleteEvents(auth, req.body.events);
@@ -278,8 +297,9 @@ app.post('/api/events/delete', async (req, res) => {
   }
 });
 
-// 添加获取日历列表的端点
-app.get('/api/calendars', async (req, res) => {
+router.post('/events/free-slots', getFreeTimeSlots);
+
+router.get('/calendars', async (req, res) => {
   try {
     const auth = await authenticate();
     const calendars = await listCalendars(auth);
@@ -295,8 +315,7 @@ app.get('/api/calendars', async (req, res) => {
   }
 });
 
-// 健康检查端点
-app.get('/api/health', (req, res) => {
+router.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     environment: process.env.NODE_ENV,
@@ -304,13 +323,4 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Vercel 需要导出 app
-module.exports = app;
-
-// 只在非 Vercel 环境下启动服务器
-if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-  });
-} 
+module.exports = router; 
