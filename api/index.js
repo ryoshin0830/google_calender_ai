@@ -3,6 +3,7 @@ const { google } = require('googleapis');
 const { authenticate } = require('./auth');
 const getFreeTimeSlots = require('./free-slots');
 const { DateTime } = require('luxon');
+const validateApiKey = require('./middleware/auth');
 
 const router = express.Router();
 const DEFAULT_TIMEZONE = 'Asia/Tokyo';
@@ -292,7 +293,7 @@ async function deleteEvents(auth, events) {
 }
 
 // API 路由
-router.post('/events/list', async (req, res) => {
+router.post('/events/list', validateApiKey, async (req, res) => {
   try {
     const timezone = req.body.timezone || DEFAULT_TIMEZONE;
     const auth = await authenticate();
@@ -318,7 +319,7 @@ router.post('/events/list', async (req, res) => {
   }
 });
 
-router.post('/events/add', async (req, res) => {
+router.post('/events/add', validateApiKey, async (req, res) => {
   try {
     const timezone = req.body.timezone || DEFAULT_TIMEZONE;
     const auth = await authenticate();
@@ -337,7 +338,7 @@ router.post('/events/add', async (req, res) => {
   }
 });
 
-router.post('/events/delete', async (req, res) => {
+router.post('/events/delete', validateApiKey, async (req, res) => {
   try {
     const auth = await authenticate();
     const results = await deleteEvents(auth, req.body.events);
@@ -354,9 +355,9 @@ router.post('/events/delete', async (req, res) => {
   }
 });
 
-router.post('/events/free-slots', getFreeTimeSlots);
+router.post('/events/free-slots', validateApiKey, getFreeTimeSlots);
 
-router.get('/calendars', async (req, res) => {
+router.get('/calendars', validateApiKey, async (req, res) => {
   try {
     const auth = await authenticate();
     const calendars = await listCalendars(auth);

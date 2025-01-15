@@ -30,6 +30,7 @@ npm install
 GOOGLE_CLIENT_ID=your_client_id
 GOOGLE_CLIENT_SECRET=your_client_secret
 GOOGLE_REDIRECT_URI=your_redirect_uri
+API_KEYS=your_api_keys_comma_separated
 ```
 
 ## API Endpoints
@@ -226,7 +227,32 @@ Error response format:
 
 ## Authentication
 
-The API uses OAuth2 for authentication. You need to:
+The API uses two levels of authentication:
+
+1. OAuth2 for Google Calendar access
+2. API Key for endpoint access control
+
+### API Key Authentication
+
+All API endpoints (except `/api/health`) require an API key to be included in the request headers:
+
+```http
+X-API-Key: your_api_key
+```
+
+API keys are configured through the `API_KEYS` environment variable as a comma-separated list. Multiple API keys can be specified to support different clients.
+
+Example request with API key:
+```bash
+curl -X POST \
+  -H "X-API-Key: your_api_key" \
+  -H "Content-Type: application/json" \
+  http://your-api-url/api/events/list
+```
+
+### OAuth2 Authentication
+
+The API uses OAuth2 for authentication with Google Calendar API. You need to:
 
 1. Obtain OAuth2 credentials from Google Cloud Console
 2. Set up environment variables with credentials
