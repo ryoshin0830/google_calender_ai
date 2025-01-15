@@ -1,64 +1,181 @@
-# Google Calendar Free Slots API
+# Google Calendar API
 
-This API helps you find available time slots in your Google Calendar, taking into account your working hours and existing calendar events. It supports multiple calendars, timezone handling, and buffer times for meetings.
+A RESTful API service that provides integration with Google Calendar, allowing you to manage events and find free time slots. The API is built with Node.js and Express, using the Google Calendar API for backend operations.
 
 ## Features
 
-- Find free time slots between specified dates
-- Respect working hours
-- Support for multiple time zones
-- Buffer time support for meetings (using event title format)
-- Minimum slot duration filtering (30 minutes)
-- Multiple calendar support (main and block calendars)
+- Add events to Google Calendar
+- List events from multiple calendars
+- Delete events
+- Find free time slots between events
+- Timezone support using Luxon
+- OAuth2 authentication
 
 ## Prerequisites
 
-- Node.js (v16 or higher)
-- Google Calendar API credentials
-- Google Calendar API enabled in Google Cloud Console
+- Node.js (v14 or higher)
+- Google Cloud Platform account
+- OAuth2 credentials (client ID and client secret)
+- Google Calendar API enabled in GCP Console
 
 ## Installation
 
-1. Clone the repository:
-```bash
-git clone [your-repository-url]
-cd google-calendar
-```
-
+1. Clone the repository
 2. Install dependencies:
 ```bash
 npm install
 ```
-
 3. Set up environment variables in `.env`:
 ```env
 GOOGLE_CLIENT_ID=your_client_id
 GOOGLE_CLIENT_SECRET=your_client_secret
 GOOGLE_REDIRECT_URI=your_redirect_uri
-GOOGLE_REFRESH_TOKEN=your_refresh_token
 ```
 
-## API Usage
+## API Endpoints
 
-### Start the Server
+### Health Check
 
-```bash
-node server.js
+Check if the API is running.
+
+```http
+GET /api/health
 ```
 
-The server will start on port 3000 by default.
+Response:
+```json
+{
+  "status": "ok",
+  "environment": "production",
+  "timestamp": "2025-01-10T16:17:25.072Z"
+}
+```
 
-### API Endpoints
+### Add Events
 
-#### GET Free Time Slots
+Add one or more events to Google Calendar.
 
-`POST /api/free-slots`
+```http
+POST /api/events/add
+```
 
 Request body:
 ```json
 {
-  "startDate": "2024-02-20",
-  "endDate": "2024-02-21",
+  "events": [{
+    "title": "Test Event",
+    "description": "Event description",
+    "start": "2025-01-11T02:00:00.000+09:00",
+    "end": "2025-01-11T03:00:00.000+09:00",
+    "timezone": "Asia/Tokyo"
+  }],
+  "timezone": "Asia/Tokyo"
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "timezone": "Asia/Tokyo",
+  "results": [
+    {
+      "success": true,
+      "eventId": "event_id",
+      "title": "Test Event",
+      "calendarId": "primary",
+      "timezone": "Asia/Tokyo"
+    }
+  ]
+}
+```
+
+### List Events
+
+List events from all calendars within a specified time range.
+
+```http
+POST /api/events/list
+```
+
+Request body:
+```json
+{
+  "days": 7,
+  "timezone": "Asia/Tokyo"
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "timeRange": {
+    "start": "2025-01-11T00:00:00.000+09:00",
+    "end": "2025-01-18T23:59:59.999+09:00"
+  },
+  "timezone": "Asia/Tokyo",
+  "count": 39,
+  "events": [
+    {
+      "id": "event_id",
+      "title": "Event Title",
+      "calendar": "calendar_name",
+      "calendarId": "calendar_id",
+      "start": "2025-01-11T00:00:00.000+09:00",
+      "end": "2025-01-11T10:00:00.000+09:00",
+      "description": "Event description",
+      "location": "Event location",
+      "timezone": "Asia/Tokyo"
+    }
+  ]
+}
+```
+
+### Delete Events
+
+Delete one or more events from Google Calendar.
+
+```http
+POST /api/events/delete
+```
+
+Request body:
+```json
+{
+  "events": [{
+    "id": "event_id",
+    "calendarId": "calendar_id"
+  }]
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "success": true,
+      "eventId": "event_id"
+    }
+  ]
+}
+```
+
+### Find Free Slots
+
+Find available time slots between events.
+
+```http
+POST /api/events/free-slots
+```
+
+Request body:
+```json
+{
+  "startDate": "2025-01-11",
+  "endDate": "2025-01-12",
   "workingHours": {
     "start": "09:00",
     "end": "18:00"
@@ -72,47 +189,75 @@ Response:
 {
   "success": true,
   "timeRange": {
-    "start": "2024-02-20",
-    "end": "2024-02-21"
+    "start": "2025-01-11",
+    "end": "2025-01-12"
   },
   "timezone": "Asia/Tokyo",
   "freeSlots": [
     {
-      "start": "2024-02-20T09:00:00+09:00",
-      "end": "2024-02-20T18:00:00+09:00"
+      "start": "2025-01-11T10:00:00+09:00",
+      "end": "2025-01-11T13:30:00+09:00"
     }
   ]
 }
 ```
 
-### Buffer Time Format
-
-You can add buffer times to meetings by adding a suffix to the event title:
-- Format: `-B{minutes}A{minutes}`
-- Example: "Meeting with Team -B15A10" (15 minutes before, 10 minutes after)
-
-## Testing
-
-Run the test script:
-```bash
-node test/test-free-slots.js
-```
-
 ## Error Handling
 
-The API returns appropriate error messages for:
-- Invalid time zones
-- Missing required parameters
-- Authentication failures
-- Calendar API errors
+The API returns appropriate HTTP status codes and error messages:
 
-## Dependencies
+- 200: Success
+- 400: Bad Request (invalid input)
+- 401: Unauthorized (authentication required)
+- 403: Forbidden (insufficient permissions)
+- 404: Not Found
+- 500: Internal Server Error
 
-- express
-- googleapis
-- luxon
-- dotenv
-- axios (for testing)
+Error response format:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Error description"
+  }
+}
+```
+
+## Authentication
+
+The API uses OAuth2 for authentication. You need to:
+
+1. Obtain OAuth2 credentials from Google Cloud Console
+2. Set up environment variables with credentials
+3. Implement OAuth2 flow in your application
+4. Include authentication tokens in API requests
+
+## Development
+
+Start the development server:
+```bash
+npm run dev
+```
+
+Run tests:
+```bash
+npm test
+```
+
+## Production
+
+For production deployment:
+
+1. Set up environment variables
+2. Build the application:
+```bash
+npm run build
+```
+3. Start the server:
+```bash
+npm start
+```
 
 ## License
 
