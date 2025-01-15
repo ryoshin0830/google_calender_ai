@@ -62,7 +62,15 @@ async function listAllEvents(auth, timeRange, timezone = DEFAULT_TIMEZONE) {
       )
     ]);
     
-    const calendars = calendarList.data.items;
+    const calendars = calendarList.data.items.filter(cal => 
+      cal.summary.toLowerCase() === 'main' || 
+      cal.summary.toLowerCase() === 'block'
+    );
+
+    if (calendars.length === 0) {
+      throw new Error('No main or block calendars found');
+    }
+
     let allEvents = [];
     
     const eventPromises = calendars.map(cal => 
@@ -146,6 +154,20 @@ async function addEvents(auth, events, timezone = DEFAULT_TIMEZONE) {
   const results = [];
   const batchSize = 5;
 
+  // 获取并验证日历
+  const calendarList = await calendar.calendarList.list();
+  const targetCalendars = calendarList.data.items.filter(cal => 
+    cal.summary.toLowerCase() === 'main' || 
+    cal.summary.toLowerCase() === 'block'
+  );
+
+  if (targetCalendars.length === 0) {
+    throw new Error('No main or block calendars found');
+  }
+
+  // 创建日历ID映射
+  const calendarMap = new Map(targetCalendars.map(cal => [cal.summary.toLowerCase(), cal.id]));
+
   for (let i = 0; i < events.length; i += batchSize) {
     const batch = events.slice(i, i + batchSize);
     const batchPromises = batch.map(event => {
@@ -176,7 +198,18 @@ async function addEvents(auth, events, timezone = DEFAULT_TIMEZONE) {
         }
       };
 
-      const targetCalendarId = event.calendarId || 'primary';
+      // 确定目标日历ID
+      const targetCalendarId = event.calendarId ? 
+        (calendarMap.get(event.calendarId.toLowerCase()) || calendarMap.get('main')) :
+        calendarMap.get('main');
+
+      if (!targetCalendarId) {
+        return Promise.resolve({
+          success: false,
+          title: event.title,
+          error: 'Invalid calendar ID - must be either "main" or "block"'
+        });
+      }
 
       return calendar.events.insert({
         calendarId: targetCalendarId,
@@ -206,13 +239,37 @@ async function addEvents(auth, events, timezone = DEFAULT_TIMEZONE) {
 async function deleteEvents(auth, events) {
   const calendar = google.calendar({ version: 'v3', auth });
   const results = [];
-  const batchSize = 5; // 每批处理的事件数
+  const batchSize = 5;
+
+  // 获取并验证日历
+  const calendarList = await calendar.calendarList.list();
+  const targetCalendars = calendarList.data.items.filter(cal => 
+    cal.summary.toLowerCase() === 'main' || 
+    cal.summary.toLowerCase() === 'block'
+  );
+
+  if (targetCalendars.length === 0) {
+    throw new Error('No main or block calendars found');
+  }
+
+  // 创建日历ID集合用于验证
+  const validCalendarIds = new Set(targetCalendars.map(cal => cal.id));
 
   // 将删除操作分批处理
   for (let i = 0; i < events.length; i += batchSize) {
     const batch = events.slice(i, i + batchSize);
-    const batchPromises = batch.map(event => 
-      calendar.events.delete({
+    const batchPromises = batch.map(event => {
+      // 验证日历ID是否有效
+      if (!validCalendarIds.has(event.calendarId)) {
+        return Promise.resolve({
+          success: false,
+          eventId: event.id,
+          title: event.title,
+          error: 'Invalid calendar ID - must be from main or block calendar'
+        });
+      }
+
+      return calendar.events.delete({
         calendarId: event.calendarId,
         eventId: event.id
       }).then(() => ({
@@ -224,8 +281,8 @@ async function deleteEvents(auth, events) {
         eventId: event.id,
         title: event.title,
         error: error.message
-      }))
-    );
+      }));
+    });
 
     const batchResults = await Promise.all(batchPromises);
     results.push(...batchResults);
